@@ -1,0 +1,19 @@
+# systemd service for the hg_pc multiplayer server: starts at boot, restarts if it stops.
+# Install (as root), assuming the files are in /opt/hg_server and a user "hgserver" exists:
+#   cp hg_server.service /etc/systemd/system/
+#   systemctl enable --now hg_server
+# Log: journalctl -u hg_server -f   (also /opt/hg_server/hg_server.log)
+[Unit]
+Description=hg_pc multiplayer server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/hg_server
+# Add options on the end, e.g. --password word --admin word
+ExecStart=/opt/hg_server/hg_server.sh
+User=hgserver
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

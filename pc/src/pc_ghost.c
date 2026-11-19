@@ -1,0 +1,215 @@
+/* Other players in the overworld: everyone pc_net.c hears about, plus HG_GHOST's fake one.
+ *
+ * Each remote player is a map object (id PC_REMOTE_ID + slot) with the Ethan/Lyra sprite of their
+ * gender, walking between tiles with the game's own movement commands, so it animates like an NPC.
+ * Their following Pokemon, when their game shows one, is another (id PC_REMOTE_MON_ID + slot) with
+ * that species' overworld sprite (form, gender and shininess too), walking to the tile it stands on
+ * in their game. The local player's position and follower go to pc_net.c whenever they change.
+ *
+ * HG_GHOST=N   a fake remote player (slot 15) replays your own position stream N frames late
+ *              (default 48, about one second): multiplayer spike S2, and a test without a server.
+ * HG_GHOST_LOG=1 logs each creation, =2 also slot 15's position every 30 frames.
+ *
+ * Lifecycle rules:
+ *  - Objects are only touched while the player could move (FieldSystem_IsPlayerMovementAllowed): no
+ *    script, menu, battle or map load in progress. Otherwise they are left alone, frozen.
+ *  - A remote player lives on the map its stream names. On another map: removed, unless both maps
+ *    are on the main matrix (outdoors, where maps join seamlessly; MAPOBJECTFLAG_KEEP stops the game
+ *    removing it at a border). Same map and no object: created. More than JUMP tiles away: removed,
+ *    then created at the target next frame (teleport). Gone from the server: removed. A changed look
+ *    (gender, follower species...) also recreates it.
+ *  - It never steps onto or appears on a tile another object stands on (the player, the following
+ *    Pokemon, NPCs); it waits instead. A remote player and their own Pokemon may pass each other.
+ *    Talking to them does nothing.
+ *  - Not drawn in the Union Room and link rooms (maps 2..5): there the game shows players itself.
+ *  - They are never written to the save: FieldSystem_SyncMapObjectsToSaveEx skips ids 208..239
+ *    (src/map_object.c, SDK_PC). Battles and full-screen menus (Options) keep them in place.
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "global.h"
+#include "constants/global_fieldmap.h"
+#include "constants/maps.h"
+#include "constants/movements.h"
+#include "constants/species.h"
+#include "constants/sprites.h"
+#include "field_system.h"
+#include "follow_mon.h"
+#include "map_header.h"
+#include "map_object.h"
+#include "player_avatar.h"
+#include "unk_02062108.h"
+#include "pc_net_proto.h"
+#include "pc_platform.h"
+
+FieldSystem *pc_field_system(void); /* src/field_system.c, SDK_PC */
+
+#define TRAIL 256
+#define JUMP  6
+
+#define FAKE  (NET_MAX_PLAYERS - 1)
+
+typedef struct {
+    int map, x, z, dir, gender, state;
+    int monSpecies, monForm, monFlags, monX, monZ, monDir; /* monSpecies 0: no follower shown */
+} Sample;
+
+static Sample sTrail[TRAIL];
+static unsigned sHead, sCount;
+static int sLog, sAny, sResend;
+static Sample sSent;
+static int sObjKey[2][NET_MAX_PLAYERS]; /* what each object was created as: [0] player gender, [1] follower */
+
+/* Another map object (the player, a follower Pokemon, an NPC; not `pass`) stands on x,z. */
+static BOOL Occupied(MapObjectManager *man, LocalMapObject *self, int x, int z, LocalMapObject *pass) {
+    LocalMapObject *other = MapObjectManager_GetFirstObjectWithXAndZ(man, x, z, FALSE);
+    return other != NULL && other != self && other != pass;
+}
+
+int pc_ghost_step(MapObjectManager *man, LocalMapObject *o, int x, int z, int dir, LocalMapObject *pass) {
+    if (!MapObject_AreBitsSetForMovementScriptInit(o)) return 0; /* mid-step */
+    MapObject_ClearHeldMovementIfActive(o);
+    int ox = MapObject_GetXCoord(o), oz = MapObject_GetZCoord(o);
+    int dx = x - ox, dz = z - oz, dist = abs(dx) + abs(dz);
+    if (dist == 0) {
+        if ((int)MapObject_GetFacingDirection(o) != dir) MapObject_SetHeldMovement(o, MOVEMENT_FACE_UP + dir);
+        return 0;
+    }
+    if (dist > JUMP) return dist; /* the caller removes or moves it */
+    int d = dx > 0 ? DIR_EAST : dx < 0 ? DIR_WEST : dz > 0 ? DIR_SOUTH : DIR_NORTH;
+    int nx = ox + (d == DIR_EAST) - (d == DIR_WEST), nz = oz + (d == DIR_SOUTH) - (d == DIR_NORTH);
+    if (Occupied(man, o, nx, nz, pass)) return dist; /* wait, e.g. behind the player and their Pokemon */
+    MapObject_SetHeldMovement(o, (dist > 1 ? MOVEMENT_RUN_UP : MOVEMENT_STEP_UP) + d);
+    return dist;
+}
+
+static void Untalkable(LocalMapObject *o, int id) {
+    MapObject_SetID(o, id);
+    MapObject_SetType(o, 0);
+    MapObject_SetEventFlag(o, 0);
+    MapObject_SetScriptID(o, 0);
+}
+
+static LocalMapObject *CreateFigure(MapObjectManager *man, int id, int x, int z, int dir, int gender, int map) {
+    /* shortcut: always the walking sprite; cycling/surfing players show walking */
+    LocalMapObject *o = MapObject_Create(man, x, z, dir, gender ? SPRITE_HEROINE : SPRITE_HERO, 0, map);
+    if (o == NULL) return NULL;
+    Untalkable(o, id);
+    MapObject_SetFlagsBits(o, MAPOBJECTFLAG_UNK19 | MAPOBJECTFLAG_KEEP); /* UNK19: not talkable (sub_0203DC64), else A runs script 0 */
+    return o;
+}
+
+/* Like FollowMon_CreateMapObject (src/follow_mon.c), but standing still unless driven: movement 0,
+ * not the follow-the-player movement. key = species | form << 16 | flags << 24. */
+static LocalMapObject *CreateFollower(MapObjectManager *man, int id, int x, int z, int dir, int key, int map) {
+    int species = key & 0xFFFF, form = (key >> 16) & 0xFF, flags = key >> 24;
+    LocalMapObject *o = MapObject_Create(man, x, z, dir, FollowMon_GetSpriteID(species, form, (flags >> 1) & 3), 0, map);
+    if (o == NULL) return NULL;
+    Untalkable(o, id);
+    MapObject_SetParam(o, 0, 2);
+    FollowMon_SetObjectParams(o, species, form, flags & 1);
+    MapObject_SetFlagsBits(o, MAPOBJECTFLAG_UNK13 | MAPOBJECTFLAG_KEEP | MAPOBJECTFLAG_UNK19);
+    MapObject_ClearFlagsBits(o, MAPOBJECTFLAG_UNK8 | MAPOBJECTFLAG_UNK7);
+    MapObject_SetFlag29(o, TRUE);
+    sub_02069DC8(o, FALSE); /* shown (TRUE would hide it: the game shows its own follower later) */
+    return o;
+}
+
+typedef LocalMapObject *(*CreateFn)(MapObjectManager *, int id, int x, int z, int dir, int key, int map);
+
+/* Keeps object `id` at map/x/z/dir looking like `key`; key < 0: it shouldn't exist. */
+static void Drive(FieldSystem *fs, int id, int key, int *objKey, int map, int x, int z, int dir, const Sample *me, CreateFn create, LocalMapObject *pass) {
+    MapObjectManager *man = fs->mapObjectManager;
+    LocalMapObject *o = MapObjectManager_GetFirstActiveObjectByID(man, id);
+    if (o != NULL && key != *objKey) {
+        MapObject_Remove(o);
+        return;
+    }
+    if (key < 0) return;
+    /* Maps on the main matrix (the outdoor world) share coordinates and join seamlessly. */
+    if (map != me->map && !(MapHeader_MapIsOnMainMatrix(map) && MapHeader_MapIsOnMainMatrix(me->map))) {
+        if (o != NULL) MapObject_Remove(o);
+        return;
+    }
+    if (o == NULL) {
+        if (Occupied(man, NULL, x, z, pass)) return;
+        if (create(man, id, x, z, dir, key, me->map) == NULL) return; /* every object slot of this map is taken */
+        sAny = 1;
+        *objKey = key;
+        if (sLog) fprintf(stderr, "hg_pc: ghost: object %d created on map %d at %d,%d\n", id, map, x, z);
+        return;
+    }
+    static int n;
+    if (sLog > 1 && id == PC_REMOTE_ID + FAKE && ++n % 30 == 0) {
+        fprintf(stderr, "hg_pc: ghost: at %d,%d target %d,%d flags %08x ready %d\n", (int)MapObject_GetXCoord(o), (int)MapObject_GetZCoord(o), x, z,
+            (unsigned)MapObject_GetFlags(o), MapObject_AreBitsSetForMovementScriptInit(o));
+    }
+    if (pc_ghost_step(man, o, x, z, dir, pass) > JUMP) MapObject_Remove(o);
+}
+
+/* A remote follower's look, or -1 for none; other games' data is checked (a bad species would read
+ * past the sprite tables). */
+static int MonKey(const Sample *t) {
+    if (t->monSpecies <= 0 || t->monSpecies > NATIONAL_DEX_COUNT) return -1;
+    int form = t->monForm <= OverworldModelLookupFormCount(t->monSpecies) ? t->monForm : 0;
+    return t->monSpecies | form << 16 | (t->monFlags & 7) << 24;
+}
+
+static void DriveSlot(FieldSystem *fs, int slot, const Sample *t, const Sample *me) {
+    MapObjectManager *man = fs->mapObjectManager;
+    LocalMapObject *player = MapObjectManager_GetFirstActiveObjectByID(man, PC_REMOTE_ID + slot);
+    LocalMapObject *mon = MapObjectManager_GetFirstActiveObjectByID(man, PC_REMOTE_MON_ID + slot);
+    Sample none = { 0 };
+    if (t == NULL) t = &none;
+    int playerKey = t == &none ? -1 : t->gender, monKey = t == &none ? -1 : MonKey(t);
+    Drive(fs, PC_REMOTE_ID + slot, playerKey, &sObjKey[0][slot], t->map, t->x, t->z, t->dir, me, CreateFigure, mon);
+    Drive(fs, PC_REMOTE_MON_ID + slot, monKey, &sObjKey[1][slot], t->map, t->monX, t->monZ, t->monDir, me, CreateFollower, player);
+}
+
+void pc_ghost_resend(void) { sResend = 1; }
+
+void pc_ghost_frame(void) {
+    static int delay = -1;
+    if (delay < 0) {
+        const char *e = getenv("HG_GHOST");
+        delay = e == NULL ? 0 : atoi(e) > 0 ? atoi(e) : 48;
+        if (delay >= TRAIL) delay = TRAIL - 1;
+        sLog = getenv("HG_GHOST_LOG") ? atoi(getenv("HG_GHOST_LOG")) : 0;
+    }
+    if (delay == 0 && !sAny && !pc_net_wanted()) return; /* single player: touch nothing */
+    FieldSystem *fs = pc_field_system();
+    if (fs == NULL || fs->processManager == NULL || !FieldSystem_IsPlayerMovementAllowed(fs)) return;
+    PlayerAvatar *pa = fs->playerAvatar;
+    Sample me = { fs->location->mapId, PlayerAvatar_GetXCoord(pa), PlayerAvatar_GetZCoord(pa), PlayerAvatar_GetFacingDirection(pa),
+                  PlayerAvatar_GetGender(pa), PlayerAvatar_GetState(pa) };
+    LocalMapObject *follower = FollowMon_GetMapObject(fs);
+    if (follower != NULL && FollowMon_IsVisible(fs)) {
+        me.monSpecies = fs->followMon.species;
+        me.monForm = fs->followMon.form;
+        me.monFlags = (fs->followMon.shiny ? 1 : 0) | (fs->followMon.gender & 3) << 1;
+        me.monX = MapObject_GetXCoord(follower);
+        me.monZ = MapObject_GetZCoord(follower);
+        me.monDir = MapObject_GetFacingDirection(follower);
+    }
+    if (sResend || memcmp(&me, &sSent, sizeof me) != 0) {
+        sResend = 0;
+        sSent = me;
+        NetPos p = { 0, (uint8_t)me.dir, (uint8_t)me.gender, (uint8_t)me.state, (uint16_t)me.map, (uint16_t)me.x, (uint16_t)me.z,
+                     (uint16_t)me.monSpecies, (uint8_t)me.monForm, (uint8_t)me.monFlags, (uint16_t)me.monX, (uint16_t)me.monZ, (uint8_t)me.monDir };
+        pc_net_send_pos(&p);
+    }
+    for (int slot = 0; slot < NET_MAX_PLAYERS; slot++) {
+        const PcRemote *r = pc_net_remote(slot);
+        Sample t, *tp = NULL;
+        if (slot == FAKE && delay > 0) {
+            sTrail[sHead++ % TRAIL] = me;
+            if (sCount < TRAIL) sCount++;
+            if (sCount > (unsigned)delay) tp = &sTrail[(sHead - 1 - delay) % TRAIL];
+        } else if (r != NULL && r->hasPos && me.map > MAP_WIFI_MULTI_BATTLE_AREA) { /* Union Room, link rooms: the game draws players itself */
+            t = (Sample){ r->map, r->x, r->z, r->dir, r->gender, r->state, r->monSpecies, r->monForm, r->monFlags, r->monX, r->monZ, r->monDir };
+            tp = &t;
+        }
+        DriveSlot(fs, slot, tp, &me);
+    }
+}

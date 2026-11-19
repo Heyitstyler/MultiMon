@@ -1,0 +1,285 @@
+diff --git a/include/berry_pots_app_internal.h b/include/berry_pots_app_internal.h
+index a9abedc..f2e5cb3 100644
+--- a/include/berry_pots_app_internal.h
++++ b/include/berry_pots_app_internal.h
+@@ -117,16 +117,7 @@ void ov17_02203638(BerryPotsAppData *data);
+ void ov17_022036FC(BerryPotsAppData *data, enum BerryPotsApp_022036FC_Action action, u8 potIndex);
+ void ov17_022037C8(BerryPotsAppData *data, BOOL a1);
+ void ov17_0220387C(BerryPotsAppData *data);
+-void ov17_02203928(BerryPotsAppData *data);
+ u32 ov17_02203A34(BerryPotsAppData *data);
+ BOOL ov17_02203A54(BerryPotsAppData *data);
+-u32 ov17_02203A74(BerryPotsAppData *data, u32 a1);
+-u32 ov17_02203AD4(BerryPotsAppData *data);
+-u32 ov17_02203B68(BerryPotsAppData *data, BOOL *a1);
+-BOOL ov17_02203B88(BerryPotsAppData *data);
+-BOOL ov17_02203C20(BerryPotsAppData *data, BOOL *a1);
+-int ov17_02203C78(BerryPotsAppData *data);
+-int ov17_02203CC8(BerryPotsAppData *data);
+-u32 ov17_02203D00(BerryPotsAppData *data);
+ 
+ #endif // POKEHEARTGOLD_BERRY_POTS_APP_INTERNAL_H
+diff --git a/include/field/overlay_01_02204004.h b/include/field/overlay_01_02204004.h
+index b5141a6..1683b1b 100644
+--- a/include/field/overlay_01_02204004.h
++++ b/include/field/overlay_01_02204004.h
+@@ -114,7 +114,7 @@ void ov01_02204634(FieldSystemUnkSubCC *unkCC);                    // UnkCC_Free
+ void ov01_0220463C(FieldSystemUnkSubCC *unkCC, int fileID);        // UnkCC_Load
+ void ov01_02204678(FieldSystemUnkSubCC *unkCC, NNSG3dRenderObj *renderObj);
+ void ov01_02204688(FieldSystemUnkSubCC *unkCC, NNSG3dRenderObj *renderObj);
+-void ov01_02204698(FieldSystemUnkSubCC *unkCC);
++u16 ov01_02204698(FieldSystemUnkSubCC *unkCC);
+ FieldSystemUnkSub104 *ov01_02204744(enum HeapID heapID);
+ void ov01_02204764(FieldSystemUnkSub104 *unk104);
+ void ov01_0220476C(FieldSystemUnkSub104 *unk104, NNSG3dRenderObj *renderObj, MapPropAnimation **animation, int count);
+diff --git a/include/overlay_01_021F1348.h b/include/overlay_01_021F1348.h
+index 472ee95..6d43a83 100644
+--- a/include/overlay_01_021F1348.h
++++ b/include/overlay_01_021F1348.h
+@@ -62,7 +62,7 @@ UnkOv01_021FFECC *ov01_021F1430(void *a0, int a1, int a2, int a3);
+ FieldSystem *ov01_021F146C(LocalMapObject *mapObject);
+ TaskManager *ov01_021F1468(FieldSystem *fieldSystem);
+ UnkOv01_021FFECC *ov01_021F1450(FieldSystem *fieldSystem, int a1);
+-void ov01_021F1620(FieldSystem *fieldSystem, const UnkOv01_02209280 *a1, VecFx32 *a2, int a3, UnkOv01_021FFF5C *a4, int a5);
++void *ov01_021F1620(FieldSystem *fieldSystem, const UnkOv01_02209280 *a1, VecFx32 *a2, int a3, UnkOv01_021FFF5C *a4, int a5);
+ void ov01_021F1448(void *a0); // UnkOv01_021FFECC or NNSG3dResFileHeader?
+ void ov01_021F19F4(void *a0, UnkOv01_021FFECC_sub *a1, int a2, int a3, int a4);
+ void ov01_021F1640(int a0);
+diff --git a/include/overlay_01_021FFECC.h b/include/overlay_01_021FFECC.h
+index 2e67b9f..2b23111 100644
+--- a/include/overlay_01_021FFECC.h
++++ b/include/overlay_01_021FFECC.h
+@@ -5,6 +5,6 @@
+ 
+ UnkOv01_021FFECC *ov01_021FFECC(void *a0);
+ void ov01_021FFEE8(UnkOv01_021FFECC *a0);
+-void ov01_021FFF5C(LocalMapObject *mapObject, int a1);
++void *ov01_021FFF5C(LocalMapObject *mapObject, int a1);
+ 
+ #endif // POKEHEARTGOLD_OV_01_021FFECC_H
+diff --git a/src/berry_pots_app.c b/src/berry_pots_app.c
+index 0516b05..9fc4ff4 100644
+--- a/src/berry_pots_app.c
++++ b/src/berry_pots_app.c
+@@ -344,6 +344,11 @@ BOOL BerryPotsApp_Run(OverlayManager *manager, int *state) {
+ 
+ BOOL BerryPotsApp_Exit(OverlayManager *manager, int *state) {
+     BerryPotsAppData *data = OverlayManager_GetData(manager);
++#ifdef SDK_PC
++    // The app never clears its VBlank callback, which then runs on the freed app data until the next
++    // screen sets its own. Harmless junk reads on the DS; on PC the junk pointers can fault.
++    Main_SetVBlankIntrCB(NULL, NULL);
++#endif
+     if (!ov17_02201E3C(data)) {
+         return FALSE;
+     }
+diff --git a/src/berry_pots_app_tasks.c b/src/berry_pots_app_tasks.c
+index 22b06bd..6cc7844 100644
+--- a/src/berry_pots_app_tasks.c
++++ b/src/berry_pots_app_tasks.c
+@@ -8,6 +8,16 @@
+ #include "touchscreen.h"
+ #include "unk_02005D10.h"
+ 
++static void ov17_02203928(BerryPotsAppData *data);
++static u32 ov17_02203A74(BerryPotsAppData *data, u32 a1);
++static u32 ov17_02203AD4(BerryPotsAppData *data);
++static u32 ov17_02203B68(BerryPotsAppData *data, BOOL *a1);
++static BOOL ov17_02203B88(BerryPotsAppData *data);
++static BOOL ov17_02203C20(BerryPotsAppData *data, BOOL *a1);
++static int ov17_02203C78(BerryPotsAppData *data);
++static int ov17_02203CC8(BerryPotsAppData *data);
++static u32 ov17_02203D00(BerryPotsAppData *data);
++
+ typedef struct SysTaskArgs_ov17_0220351C {
+     BerryPotsAppData *data;
+     u8 unk4;
+diff --git a/src/error_handling.c b/src/error_handling.c
+index ea83500..c9416a4 100644
+--- a/src/error_handling.c
++++ b/src/error_handling.c
+@@ -5,7 +5,18 @@
+ #include "error_message_reset.h"
+ #include "unk_02037C94.h"
+ 
++#ifdef SDK_PC
++void pc_assert_hit(void);
++#endif
++
+ void GF_AssertFail(void) {
++#ifdef SDK_PC
++    pc_assert_hit(); // logs the call site when HG_ASSERT_LOG is set
++    // Retail builds compile GF_ASSERT out, so the game carries on. Don't show "A communication error
++    // has occurred" and reset just because an assert hit while linked (friend data at a trade's end,
++    // a send failing as a link closes).
++    return;
++#endif
+     if (!sub_02037D78()) {
+         return;
+     }
+diff --git a/src/field/overlay_01_021FFECC.c b/src/field/overlay_01_021FFECC.c
+index 9bec086..e6d821a 100644
+--- a/src/field/overlay_01_021FFECC.c
++++ b/src/field/overlay_01_021FFECC.c
+@@ -50,7 +50,7 @@ static NNSG3dRenderObj *ov01_021FFF50(UnkOv01_021FFECC *a0, int idx) {
+     return &a0->unk54[idx];
+ }
+ 
+-void ov01_021FFF5C(LocalMapObject *mapObject, int a1) {
++void *ov01_021FFF5C(LocalMapObject *mapObject, int a1) {
+     VecFx32 temp;
+     UnkOv01_021FFF5C temp2;
+ 
+@@ -72,7 +72,7 @@ void ov01_021FFF5C(LocalMapObject *mapObject, int a1) {
+     temp2.unk10 = ov01_021FFF50(val1, a1);
+ 
+     int val3 = MapObject_GetPriorityPlusValue(mapObject, 2);
+-    ov01_021F1620(fieldSystem, &ov01_02209280, &temp, 0, &temp2, val3);
++    return ov01_021F1620(fieldSystem, &ov01_02209280, &temp, 0, &temp2, val3);
+ }
+ 
+ static BOOL ov01_021FFFCC(void *a0, UnkOv01_021FFFCD *a1) {
+diff --git a/src/field/overlay_01_02204004.c b/src/field/overlay_01_02204004.c
+index aefcc69..831e4e9 100644
+--- a/src/field/overlay_01_02204004.c
++++ b/src/field/overlay_01_02204004.c
+@@ -396,8 +396,8 @@ void ov01_02204688(FieldSystemUnkSubCC *unkCC, NNSG3dRenderObj *renderObj) { //
+     MapPropAnimation_RemoveFromRenderObj(renderObj, unkCC->mapPropAnimation);
+ }
+ 
+-void ov01_02204698(FieldSystemUnkSubCC *unkCC) {
+-    ov01_0220434C(unkCC->unk0);
++u16 ov01_02204698(FieldSystemUnkSubCC *unkCC) {
++    return ov01_0220434C(unkCC->unk0);
+ }
+ 
+ static void ov01_022046A4(NNSFndAllocator *pAllocator, NNSG3dAnmObj **pAlloc, void *res, int a3) {
+diff --git a/src/field/weather_manager.c b/src/field/weather_manager.c
+index a8a81eb..e0e4138 100644
+--- a/src/field/weather_manager.c
++++ b/src/field/weather_manager.c
+@@ -1883,9 +1883,17 @@ static const ov01_0220673C[] = { 16, 32, 16, 10 };
+ 
+ static void ov01_021ECF4C(WeatherSystem_Sub0_Sub8 *a0, int a1) {
+     int table0[4];
++#ifdef SDK_PC // gcc has no array assignment
++    memcpy(table0, ov01_0220673C, sizeof(table0));
++#else
+     table0 = ov01_0220673C;
++#endif
+     int table1[4];
++#ifdef SDK_PC
++    memcpy(table1, ov01_0220674C, sizeof(table1));
++#else
+     table1 = ov01_0220674C;
++#endif
+     UnkStruct_021EC94C *v0 = a0->unkF58;
+ 
+     for (int i = 0; i < a1; i++) {
+diff --git a/src/field_system.c b/src/field_system.c
+index b7e6924..9a8a018 100644
+--- a/src/field_system.c
++++ b/src/field_system.c
+@@ -45,6 +45,13 @@ const OverlayManagerTemplate gApplication_ContinueFieldsys = {
+ 
+ static FieldSystem *sFieldSysPtr;
+ 
++#ifdef SDK_PC
++// The PC port's development warp (pc/src/pc_debug.c) needs the running field.
++FieldSystem *pc_field_system(void) {
++    return sFieldSysPtr;
++}
++#endif
++
+ typedef struct UnkFieldSystemInit {
+     int unk0;
+     int unk4;
+diff --git a/src/map_object.c b/src/map_object.c
+index 846e601..d51eb5b 100644
+--- a/src/map_object.c
++++ b/src/map_object.c
+@@ -397,6 +397,11 @@ void FieldSystem_SyncMapObjectsToSaveEx(FieldSystem *fieldSystem, MapObjectManag
+     LocalMapObject *object;
+ 
+     while (MapObjectManager_GetNextObjectWithFlagFromIndex(manager, &object, &index, MAPOBJECTFLAG_ACTIVE)) { // MapObjectManager_GetNextActiveObject? this is an iterator however
++#ifdef SDK_PC
++        if (MapObject_GetID(object) >= 208 && MapObject_GetID(object) < 240) { // PC_REMOTE_MON_ID..PC_REMOTE_ID+15: other players and their Pokemon (pc/src/pc_ghost.c) stay out of the save
++            continue;
++        }
++#endif
+         SavedMapObject_InitFromLocalMapObject(fieldSystem, object, savedObjects);
+ 
+         count--;
+diff --git a/src/options_app.c b/src/options_app.c
+index 160cb0f..0b5492b 100644
+--- a/src/options_app.c
++++ b/src/options_app.c
+@@ -516,6 +516,11 @@ static BOOL ov54_021E5CE4(OptionsApp_Data *data) {
+ static BOOL ov54_021E5DBC(OptionsApp_Data *data) {
+     switch (data->setupAndFreeState) {
+     case 0:
++#ifdef SDK_PC
++        // The VBlank callback reads bgConfig, freed below, and is only removed in case 1. On the DS that
++        // one stale VBlank DMAs from a junk address harmlessly (GBA slot); here it faults.
++        Main_SetVBlankIntrCB(NULL, NULL);
++#endif
+         GF_DestroyVramTransferManager();
+         OptionsApp_FreeWindows(data);
+ 
+diff --git a/src/sav_system_info.c b/src/sav_system_info.c
+index 81a3a82..72b91b0 100644
+--- a/src/sav_system_info.c
++++ b/src/sav_system_info.c
+@@ -37,6 +37,9 @@ void Save_SysInfo_InitFromSystem(SysInfo *sys_info) {
+ }
+ 
+ BOOL Save_SysInfo_MacAddressIsMine(SysInfo *sys_info) {
++#ifdef SDK_PC
++    return TRUE; // online play gives each run its own MAC (pc/src/pc_wm.c); not a new console, so no "moved console" reset
++#endif
+     u8 mac_address[6];
+     OS_GetMacAddress(mac_address);
+ 
+diff --git a/src/sound_radio_sys.c b/src/sound_radio_sys.c
+index 17d5f65..f27412b 100644
+--- a/src/sound_radio_sys.c
++++ b/src/sound_radio_sys.c
+@@ -45,3 +45,22 @@ void SndRadio_PausePlayer(BOOL flag) {
+ int SndRadio_CountPlayingSeq(void) {
+     return NNS_SndPlayerCountPlayingSeqByPlayerNo(PLAYER_RADIO);
+ }
++
++#ifdef SDK_PC
++/* hg_pc (pc/src/pc_snd.c): the ARM7 sequence players playing music right now (the field music, the
++ * BGM, jingles and the radio), one bit each, so music can keep real time while sound effects follow
++ * the game speed. */
++u32 PC_SndMusicPlayers(void) {
++    NNSSndSeqPlayer *players[] = {
++        GF_GetSoundHandle(SND_HANDLE_FIELD)->player, GF_GetSoundHandle(SND_HANDLE_BGM)->player,
++        GF_GetSoundHandle(SND_HANDLE_ME)->player, sSndHandle.player,
++    };
++    u32 mask = 0;
++    for (int i = 0; i < (int)NELEMS(players); i++) {
++        if (players[i] != NULL) {
++            mask |= 1u << players[i]->playerNo;
++        }
++    }
++    return mask;
++}
++#endif
+diff --git a/src/system.c b/src/system.c
+index c11563e..e78c185 100644
+--- a/src/system.c
++++ b/src/system.c
+@@ -121,7 +121,11 @@ void InitSystemForTheGame(void) {
+     OS_InitTick();
+     sub_0201A1B4();
+     gSystem.mainTaskQueue = SysTaskQueue_PlacementNew(160, OS_AllocFromArenaLo(OS_ARENA_MAIN, SysTaskQueue_GetArenaSize(160), 4));
++#ifdef SDK_PC // VBlank runs only between frames here, not mid-load, so one-shot tasks pile up longer
++    gSystem.vblankTaskQueue = SysTaskQueue_PlacementNew(128, OS_AllocFromArenaLo(OS_ARENA_MAIN, SysTaskQueue_GetArenaSize(128), 4));
++#else
+     gSystem.vblankTaskQueue = SysTaskQueue_PlacementNew(32, OS_AllocFromArenaLo(OS_ARENA_MAIN, SysTaskQueue_GetArenaSize(32), 4));
++#endif
+     gSystem.vwaitTaskQueue = SysTaskQueue_PlacementNew(32, OS_AllocFromArenaLo(OS_ARENA_MAIN, SysTaskQueue_GetArenaSize(32), 4));
+     gSystem.printTaskQueue = SysTaskQueue_PlacementNew(4, OS_AllocFromArenaLo(OS_ARENA_MAIN, SysTaskQueue_GetArenaSize(4), 4));
+     GX_DispOff();

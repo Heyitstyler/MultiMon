@@ -1,0 +1,7 @@
+# Never commit game data, saves or builds.
+*.nds
+*.sav
+*.exe
+*.dll
+build/
+pokeheartgold/
