@@ -157,7 +157,7 @@ void pc_npc_frame(void) {
             if (o == NULL) continue; /* hidden or gone in this save */
             Hold(o, n->map, e->obj);
             followed++;
-            if (pc_ghost_step(man, o, e->x, e->z, e->dir & 3, NULL) > JUMP) {
+            if (pc_ghost_step(man, o, e->x, e->z, e->dir & 3, NULL, 0) > JUMP) {
                 MapObject_SetPositionFromXYZAndDirection(o, e->x, MapObject_GetYCoord(o), e->z, e->dir & 3);
             }
             if (sLog > 1 && sFrame % 60 == 0) {

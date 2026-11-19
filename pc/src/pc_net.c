@@ -268,6 +268,12 @@ static void Message(int type, const unsigned char *b, int len) {
         const NetPos *p = (const NetPos *)b;
         if (p->id >= NET_MAX_PLAYERS || !sRemotes[p->id].active) return;
         PcRemote *r = &sRemotes[p->id];
+        if (!r->hasPos || r->x != p->x || r->z != p->z || r->dir != (p->dir & 3)) {
+            r->path[r->pathIn++ % PC_PATH] = (PcStep){ (short)p->x, (short)p->z, (unsigned char)(p->dir & 3) };
+        }
+        if (r->monX != p->monX || r->monZ != p->monZ || r->monDir != (p->monDir & 3)) {
+            r->monPath[r->monPathIn++ % PC_PATH] = (PcStep){ (short)p->monX, (short)p->monZ, (unsigned char)(p->monDir & 3) };
+        }
         r->hasPos = 1;
         r->map = p->map;
         r->x = p->x;

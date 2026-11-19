@@ -546,6 +546,25 @@ Before an overworld battle, both players now pick their Pokémon on the game's o
 - **A full battle** played to the end after picking (the end of a battle was tested before the picker existed).
 - **The Windows build** in a link.
 
+### Remote figures follow the real path (2026-11-18)
+
+**Reported problem:** a remote player's figure ended up in the right place, but it got there by its own route. It walked straight toward the latest position, sideways first and then up or down. When an NPC or the local player stood on that route, the figure waited there and looked stuck, while the real player had walked around.
+
+**Fix:**
+- **Recording the path:** each position a game hears is now kept in order, as a ring of 32 per remote player (`PcRemote.path`, filled in `pc/src/pc_net.c`), and likewise for their following Pokémon. Games already sent one position per tile moved, so the path is complete. There's no protocol change.
+- **Walking it (`pc/src/pc_ghost.c`):**
+  - The figure walks those tiles in order, and runs when it is 2 or more steps behind.
+  - When it falls more than 28 steps behind, it starts again at the latest position.
+  - If an object stands on its next step for 40 frames (about two thirds of a second), the figure moves onto that tile anyway, so it can't stay stuck.
+  - The same applies to the following Pokémon.
+- **Test aid:** `HG_GHOST_LOG=3` logs each tile a game moves to and each tile a remote figure walks onto.
+
+**Tested:**
+- b walked an L around New Bark (down 2, left 4, up 2). On a's screen, b's figure walked the same 13 tiles in the same order.
+- Normal play is unchanged on Linux and Windows.
+
+**Not tested:** the "step onto it anyway" rule, which needs an object to stand in the way at the right moment.
+
 ## Open questions and risks
 
 - **Comm-layer tolerance:** S1 showed that trades work at 150 ms one way (see above). Battles, packet loss and larger delays are still unmeasured. The server link is TCP, so loss turns into delay.

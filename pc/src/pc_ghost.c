@@ -8,7 +8,8 @@
  *
  * HG_GHOST=N   a fake remote player (slot 15) replays your own position stream N frames late
  *              (default 48, about one second): multiplayer spike S2, and a test without a server.
- * HG_GHOST_LOG=1 logs each creation, =2 also slot 15's position every 30 frames.
+ * HG_GHOST_LOG=1 logs each creation, =2 also slot 15's position every 30 frames, =3 also each tile
+ * this player moves to and each tile a remote figure walks onto (to compare paths across games).
  *
  * Lifecycle rules:
  *  - Objects are only touched while the player could move (FieldSystem_IsPlayerMovementAllowed): no
@@ -18,8 +19,11 @@
  *    removing it at a border). Same map and no object: created. More than JUMP tiles away: removed,
  *    then created at the target next frame (teleport). Gone from the server: removed. A changed look
  *    (gender, follower species...) also recreates it.
- *  - It never steps onto or appears on a tile another object stands on (the player, the following
- *    Pokemon, NPCs); it waits instead. A remote player and their own Pokemon may pass each other.
+ *  - It walks the steps the player took, in order (PcRemote.path), running when 2 or more behind;
+ *    more than PC_PATH - 4 behind, it starts again at the latest position. Its Pokemon likewise.
+ *  - It doesn't appear on a tile another object stands on (the player, the following Pokemon, NPCs).
+ *    When one is on its next step it waits, and after STUCK frames steps onto it anyway, so it can't
+ *    stay stuck behind someone. A remote player and their own Pokemon may pass each other.
  *    Talking to them does nothing.
  *  - Not drawn in the Union Room and link rooms (maps 2..5): there the game shows players itself.
  *  - They are never written to the save: FieldSystem_SyncMapObjectsToSaveEx skips ids 208..239
@@ -67,7 +71,7 @@ static BOOL Occupied(MapObjectManager *man, LocalMapObject *self, int x, int z, 
     return other != NULL && other != self && other != pass;
 }
 
-int pc_ghost_step(MapObjectManager *man, LocalMapObject *o, int x, int z, int dir, LocalMapObject *pass) {
+int pc_ghost_step(MapObjectManager *man, LocalMapObject *o, int x, int z, int dir, LocalMapObject *pass, int fast) {
     if (!MapObject_AreBitsSetForMovementScriptInit(o)) return 0; /* mid-step */
     MapObject_ClearHeldMovementIfActive(o);
     int ox = MapObject_GetXCoord(o), oz = MapObject_GetZCoord(o);
@@ -79,10 +83,22 @@ int pc_ghost_step(MapObjectManager *man, LocalMapObject *o, int x, int z, int di
     if (dist > JUMP) return dist; /* the caller removes or moves it */
     int d = dx > 0 ? DIR_EAST : dx < 0 ? DIR_WEST : dz > 0 ? DIR_SOUTH : DIR_NORTH;
     int nx = ox + (d == DIR_EAST) - (d == DIR_WEST), nz = oz + (d == DIR_SOUTH) - (d == DIR_NORTH);
-    if (Occupied(man, o, nx, nz, pass)) return dist; /* wait, e.g. behind the player and their Pokemon */
-    MapObject_SetHeldMovement(o, (dist > 1 ? MOVEMENT_RUN_UP : MOVEMENT_STEP_UP) + d);
+    if (Occupied(man, o, nx, nz, pass)) return -1; /* wait, e.g. behind the player and their Pokemon */
+    MapObject_SetHeldMovement(o, (dist > 1 || fast ? MOVEMENT_RUN_UP : MOVEMENT_STEP_UP) + d);
     return dist;
 }
+
+/* Remote figures walk the way the player went, a tile at a time (PcRemote.path), not straight to the
+ * latest position: a straight line can lead behind an NPC or the local player and leave them standing
+ * there while the real player walked around. */
+#define BEHIND_RUN 2  /* steps behind: run */
+#define STUCK      40 /* frames blocked on one step: move onto it anyway */
+
+typedef struct {
+    const PcStep *path; /* NULL: no path, straight to the target */
+    unsigned in, *out;  /* steps heard / walked */
+    int *blocked;       /* frames waiting on the current step */
+} Path;
 
 static void Untalkable(LocalMapObject *o, int id) {
     MapObject_SetID(o, id);
@@ -118,8 +134,10 @@ static LocalMapObject *CreateFollower(MapObjectManager *man, int id, int x, int 
 
 typedef LocalMapObject *(*CreateFn)(MapObjectManager *, int id, int x, int z, int dir, int key, int map);
 
-/* Keeps object `id` at map/x/z/dir looking like `key`; key < 0: it shouldn't exist. */
-static void Drive(FieldSystem *fs, int id, int key, int *objKey, int map, int x, int z, int dir, const Sample *me, CreateFn create, LocalMapObject *pass) {
+/* Keeps object `id` at map/x/z/dir looking like `key`; key < 0: it shouldn't exist. With a path, it gets
+ * there along the steps heard. */
+static void Drive(FieldSystem *fs, int id, int key, int *objKey, int map, int x, int z, int dir, const Sample *me, CreateFn create, LocalMapObject *pass,
+                  const Path *pa) {
     MapObjectManager *man = fs->mapObjectManager;
     LocalMapObject *o = MapObjectManager_GetFirstActiveObjectByID(man, id);
     if (o != NULL && key != *objKey) {
@@ -137,6 +155,7 @@ static void Drive(FieldSystem *fs, int id, int key, int *objKey, int map, int x,
         if (create(man, id, x, z, dir, key, me->map) == NULL) return; /* every object slot of this map is taken */
         sAny = 1;
         *objKey = key;
+        if (pa->path != NULL) *pa->out = pa->in; /* it starts at the latest position */
         if (sLog) fprintf(stderr, "hg_pc: ghost: object %d created on map %d at %d,%d\n", id, map, x, z);
         return;
     }
@@ -145,7 +164,34 @@ static void Drive(FieldSystem *fs, int id, int key, int *objKey, int map, int x,
         fprintf(stderr, "hg_pc: ghost: at %d,%d target %d,%d flags %08x ready %d\n", (int)MapObject_GetXCoord(o), (int)MapObject_GetZCoord(o), x, z,
             (unsigned)MapObject_GetFlags(o), MapObject_AreBitsSetForMovementScriptInit(o));
     }
-    if (pc_ghost_step(man, o, x, z, dir, pass) > JUMP) MapObject_Remove(o);
+    int fast = 0;
+    if (pa->path != NULL) {
+        unsigned *out = pa->out;
+        if (*out > pa->in) *out = pa->in; /* the remote's list restarted (reconnected) */
+        if (pa->in - *out > PC_PATH - 4) { /* far behind: the ring overwrote steps; start again at the latest */
+            MapObject_Remove(o);
+            return;
+        }
+        if (!MapObject_AreBitsSetForMovementScriptInit(o)) return; /* mid-step */
+        int ox = MapObject_GetXCoord(o), oz = MapObject_GetZCoord(o);
+        while (*out != pa->in && pa->path[*out % PC_PATH].x == ox && pa->path[*out % PC_PATH].z == oz) (*out)++; /* reached */
+        if (*out != pa->in) {
+            const PcStep *s = &pa->path[*out % PC_PATH];
+            x = s->x;
+            z = s->z;
+            dir = s->dir;
+            fast = pa->in - *out >= BEHIND_RUN;
+        }
+    }
+    int left = pc_ghost_step(man, o, x, z, dir, pass, fast);
+    if (left > JUMP) {
+        MapObject_Remove(o);
+    } else if (left < 0 && pa->path != NULL && ++*pa->blocked > STUCK) { /* someone stands on the step: step onto it anyway */
+        MapObject_SetPositionFromXYZAndDirection(o, x, MapObject_GetYCoord(o), z, dir);
+        *pa->blocked = 0;
+    } else if (left >= 0 && pa->path != NULL) {
+        *pa->blocked = 0;
+    }
 }
 
 /* A remote follower's look, or -1 for none; other games' data is checked (a bad species would read
@@ -156,15 +202,19 @@ static int MonKey(const Sample *t) {
     return t->monSpecies | form << 16 | (t->monFlags & 7) << 24;
 }
 
-static void DriveSlot(FieldSystem *fs, int slot, const Sample *t, const Sample *me) {
+static void DriveSlot(FieldSystem *fs, int slot, const Sample *t, const Sample *me, const PcRemote *r) {
+    static unsigned sOut[2][NET_MAX_PLAYERS];
+    static int sBlocked[2][NET_MAX_PLAYERS];
     MapObjectManager *man = fs->mapObjectManager;
     LocalMapObject *player = MapObjectManager_GetFirstActiveObjectByID(man, PC_REMOTE_ID + slot);
     LocalMapObject *mon = MapObjectManager_GetFirstActiveObjectByID(man, PC_REMOTE_MON_ID + slot);
     Sample none = { 0 };
     if (t == NULL) t = &none;
     int playerKey = t == &none ? -1 : t->gender, monKey = t == &none ? -1 : MonKey(t);
-    Drive(fs, PC_REMOTE_ID + slot, playerKey, &sObjKey[0][slot], t->map, t->x, t->z, t->dir, me, CreateFigure, mon);
-    Drive(fs, PC_REMOTE_MON_ID + slot, monKey, &sObjKey[1][slot], t->map, t->monX, t->monZ, t->monDir, me, CreateFollower, player);
+    Path figurePath = { r != NULL ? r->path : NULL, r != NULL ? r->pathIn : 0, &sOut[0][slot], &sBlocked[0][slot] };
+    Path monPath = { r != NULL ? r->monPath : NULL, r != NULL ? r->monPathIn : 0, &sOut[1][slot], &sBlocked[1][slot] };
+    Drive(fs, PC_REMOTE_ID + slot, playerKey, &sObjKey[0][slot], t->map, t->x, t->z, t->dir, me, CreateFigure, mon, &figurePath);
+    Drive(fs, PC_REMOTE_MON_ID + slot, monKey, &sObjKey[1][slot], t->map, t->monX, t->monZ, t->monDir, me, CreateFollower, player, &monPath);
 }
 
 void pc_ghost_resend(void) { sResend = 1; }
@@ -193,6 +243,7 @@ void pc_ghost_frame(void) {
         me.monDir = MapObject_GetFacingDirection(follower);
     }
     if (sResend || memcmp(&me, &sSent, sizeof me) != 0) {
+        if (sLog > 2 && (me.x != sSent.x || me.z != sSent.z)) fprintf(stderr, "hg_pc: ghost: me %d,%d\n", me.x, me.z);
         sResend = 0;
         sSent = me;
         NetPos p = { 0, (uint8_t)me.dir, (uint8_t)me.gender, (uint8_t)me.state, (uint16_t)me.map, (uint16_t)me.x, (uint16_t)me.z,
@@ -203,6 +254,7 @@ void pc_ghost_frame(void) {
         const PcRemote *r = pc_net_remote(slot);
         Sample t, *tp = NULL;
         if (slot == FAKE && delay > 0) {
+            r = NULL; /* replays every frame's position: no path needed */
             sTrail[sHead++ % TRAIL] = me;
             if (sCount < TRAIL) sCount++;
             if (sCount > (unsigned)delay) tp = &sTrail[(sHead - 1 - delay) % TRAIL];
@@ -210,6 +262,15 @@ void pc_ghost_frame(void) {
             t = (Sample){ r->map, r->x, r->z, r->dir, r->gender, r->state, r->monSpecies, r->monForm, r->monFlags, r->monX, r->monZ, r->monDir };
             tp = &t;
         }
-        DriveSlot(fs, slot, tp, &me);
+        DriveSlot(fs, slot, tp, &me, tp != NULL ? r : NULL);
+        if (sLog > 2) { /* HG_GHOST_LOG=3: each tile a remote figure walks onto */
+            static int lastX[NET_MAX_PLAYERS], lastZ[NET_MAX_PLAYERS];
+            LocalMapObject *o = MapObjectManager_GetFirstActiveObjectByID(fs->mapObjectManager, PC_REMOTE_ID + slot);
+            if (o != NULL && ((int)MapObject_GetXCoord(o) != lastX[slot] || (int)MapObject_GetZCoord(o) != lastZ[slot])) {
+                lastX[slot] = MapObject_GetXCoord(o);
+                lastZ[slot] = MapObject_GetZCoord(o);
+                fprintf(stderr, "hg_pc: ghost: figure %d %d,%d\n", slot, lastX[slot], lastZ[slot]);
+            }
+        }
     }
 }

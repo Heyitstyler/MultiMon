@@ -96,9 +96,9 @@ void pc_ghost_resend(void); /* send the local position again (just joined) */
 struct FieldSystem;
 struct MapObjectManager;
 struct LocalMapObject;
-/* One step of `o` toward x,z (or a turn to dir there); waits while another object is in the way,
- * except `pass`. Returns the distance left. */
-int pc_ghost_step(struct MapObjectManager *man, struct LocalMapObject *o, int x, int z, int dir, struct LocalMapObject *pass);
+/* One step of `o` toward x,z (or a turn to dir there), running if `fast` or further than a tile; waits
+ * while another object is in the way, except `pass`. Returns the distance left, -1 if it waited. */
+int pc_ghost_step(struct MapObjectManager *man, struct LocalMapObject *o, int x, int z, int dir, struct LocalMapObject *pass, int fast);
 /* pc_npc.c: NPCs move the same for players on one map: its leader's game sends, the others follow. */
 void pc_npc_frame(void);
 void pc_npc_lead(int lead, int map);           /* NM_LEAD */
@@ -126,11 +126,20 @@ int pc_chat_lines(char out[][PC_CHAT_COLS + 1], int max);
 void pc_chat_frame(unsigned long frame);
 
 /* pc_net.c: multiplayer client (pc_net_proto.h). */
+#define PC_PATH 32
+typedef struct {
+    short x, z;
+    unsigned char dir;
+} PcStep;
 typedef struct {
     int active, hasPos;
     char name[17];
     int map, x, z, dir, gender, state;
     int monSpecies, monForm, monFlags, monX, monZ, monDir; /* following Pokemon; monSpecies 0: none shown */
+    /* Every position heard, in order (a ring of PC_PATH; pathIn counts them all), so pc_ghost.c can walk
+     * the way they went instead of a straight line to the latest. Likewise for the following Pokemon. */
+    PcStep path[PC_PATH], monPath[PC_PATH];
+    unsigned pathIn, monPathIn;
 } PcRemote;
 void pc_net_poll(void);
 void pc_net_connect(void);
