@@ -475,13 +475,9 @@ The scripted server trade test failed for two reasons. Neither was a bug in the 
 
 ### Trades and battles in the overworld (2026-11-18)
 
-Trades and battles no longer go through a link room. Face another player, press A and choose:
+Trades and battles no longer go through a link room. Face another player, press A and choose TRADE, BATTLE, DOUBLE BATTLE or CANCEL from the menu.
 
-    Trade or battle with NAME?
-    A: Trade   X: Battle
-    Y: Double  B: No
-
-The other player sees "NAME wants to trade" (or "battle", "have a double battle") and answers A or B. On yes, the link forms right there and the trade screen or the battle opens. Afterwards both players stand where they were. Double battles need two Pokémon that can fight on both sides. Battles use the whole party, and the Union Room's level limit doesn't apply.
+The other player sees "NAME wants to trade. Is that OK?" (or "battle", "have a double battle") and answers YES or NO. On yes, the link forms right there and the trade screen or the battle opens. Afterwards both players stand where they were. Double battles need two Pokémon that can fight on both sides. Battles use the whole party, and the Union Room's level limit doesn't apply.
 
 **How it works (`pc/src/pc_link.c`):**
 - **Forming the link:** the game's own Wireless Club group code (`src/overlay_03/communication_club.c`) does it, started from a field task instead of the Pokémon Center desk. The inviter leads a group (`ov03_02255C18`) and the other player joins it (`ov03_02255BB0`). The link type is TRADE, SINGLE_BATTLE or DOUBLE_BATTLE.
@@ -493,6 +489,7 @@ The other player sees "NAME wants to trade" (or "battle", "have a double battle"
   4. The link closes (`sub_02058284`, as `ScrCmd_283`).
 - **Link-error check:** the club turns on a check that the link keeps two players. The trade screen and the battle end the link themselves, so only the game's general error check stays on during them.
 - **Protocol 9:** the invitation carries the kind (`NetInvite.kind`).
+- **The menus (`pc/src/pc_challenge.c`, 2026-11-18):** the game's own boxes, run from a field task as a script would run them, so the player can't walk away meanwhile. They are the message box (`DialogBox_*`), the field choice menu (`ov01_021EDF78`, with the TRADE, BATTLE, DOUBLE BATTLE and CANCEL texts of the standard menu bank `msg_0191`) and the YES/NO box (`Std_CreateYesNoMenu`). Text built on PC, such as the player's name, is converted from ASCII to the game's characters. An invitation waits up to 3 seconds for the invited player to stand still with nothing else going on (no menu, script or battle). Otherwise it is declined. They replaced the earlier overlay text box with A/X/Y/B choices.
 
 **A PC-only fix found on the way (`src/error_handling.c`):** this PC build keeps `GF_ASSERT` live, and the game's `GF_AssertFail` shows "A communication error has occurred" and resets whenever any assert fires during a link. Retail games compile asserts out, so on a DS those asserts never run. Two harmless ones fire at the end of every link trade: friend-data registration (`sub_0203A1C4`) and a send failing as the link closes. On PC an assert now only logs, as retail effectively behaves.
 
