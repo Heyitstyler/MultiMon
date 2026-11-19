@@ -147,6 +147,13 @@ machine or VPS). Everyone sets the server's address in the options menu (Multipl
 use the same MultiMon version and the same ROM. See `dist/linux/README.txt` for hosting details and
 security notes.
 
+## License
+
+MultiMon's own work is under the [MIT License](LICENSE): the PC port in `pc/`, MultiMon's changes in
+`patches/`, `setup.sh`, the scripts in `dist/` and the docs. It doesn't cover the
+[pret/pokeheartgold](https://github.com/pret/pokeheartgold) code that `setup.sh` downloads, the lines
+of pret's code shown as context in the patch, or the game itself.
+
 ## Credits
 
 The decompilation this builds on is the work of [pret](https://github.com/pret) and its
