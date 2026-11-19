@@ -10,4 +10,4 @@ cd "$DIR"
 git checkout -q "$BASE"
 git apply "$HERE/patches/pokeheartgold.patch"
 cp -r "$HERE/pc" .
-echo "Ready in $DIR. Next: build the DS version once (pret's INSTALL.md), then: python3 pc/tools/pc_build.py"
+echo "Ready in $DIR. Next (see README.md): cd $DIR && make, then python3 pc/tools/pc_build.py"

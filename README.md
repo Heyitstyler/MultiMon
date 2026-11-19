@@ -38,28 +38,97 @@ the port itself is described in [docs/PORT_PLAN.md](docs/PORT_PLAN.md) and
 
 ## Building
 
-These steps run on Linux (or WSL on Windows), in this order:
+Both the Linux and the Windows versions are built on Linux: Ubuntu 25.04 or newer, which has the SDL3
+packages. On Windows, use Ubuntu in WSL2. Do these steps in order.
 
-1. Set up the tree:
+### 1. Windows only: install Ubuntu in WSL2
 
-   ```bash
-   ./setup.sh
+1. Open PowerShell as administrator (right-click it in the Start menu, then **Run as administrator**).
+2. Install Ubuntu, then restart Windows if it asks you to:
+
+   ```powershell
+   wsl --install -d Ubuntu
    ```
 
-2. Build the DS version once, as described in pret's `INSTALL.md` in the new `pokeheartgold/`
-   directory. The PC build reuses its compile settings.
-3. Install a 32-bit host compiler and SDL3: for Linux, gcc with multilib and the i386 SDL3 development
-   files; for Windows, `gcc-mingw-w64-i686` and the official SDL3 mingw development release unpacked at
-   `~/sdl3-mingw/i686-w64-mingw32`.
-4. Build:
+3. Open **Ubuntu** from the Start menu. The first time, it asks for a new user name and password. The
+   password doesn't show while you type it.
+4. Work in the Linux home folder, not under `/mnt/c`, which is much slower:
 
    ```bash
-   cd pokeheartgold
-   python3 pc/tools/pc_build.py         # Linux: build/pc/hg_pc and build/pc/hg_server
-   python3 pc/tools/pc_build.py --win   # Windows: build/pc-win/hg_pc.exe, SDL3.dll, hg_server.exe
+   cd ~
    ```
 
-5. Run `hg_pc` with your ROM (or start it and pick the ROM when asked). Esc opens the options menu.
+### 2. Install the build tools
+
+Allow 32-bit packages:
+
+```bash
+sudo dpkg --add-architecture i386 && sudo apt update
+```
+
+Install the tools:
+
+```bash
+sudo apt install bison flex g++ gcc-arm-none-eabi git make ninja-build pkg-config wget python3 xz-utils nasm libc6:i386 libpng-dev gcc-multilib libsdl3-dev:i386 gcc-mingw-w64-i686
+```
+
+The DS build needs the first group of these. `gcc-multilib` and `libsdl3-dev:i386` are for the Linux
+version, and `gcc-mingw-w64-i686` is for the Windows version.
+
+For the Windows version, also get SDL3 for mingw:
+
+```bash
+mkdir -p ~/sdl3-mingw && wget -qO- https://github.com/libsdl-org/SDL/releases/download/release-3.4.2/SDL3-devel-3.4.2-mingw.tar.gz | tar -xz --strip-components=1 -C ~/sdl3-mingw
+```
+
+### 3. Get the code
+
+```bash
+git clone https://github.com/Heyitstyler/MultiMon
+```
+
+```bash
+cd MultiMon && ./setup.sh ~/pokeheartgold
+```
+
+`setup.sh` downloads pret's decompilation into `~/pokeheartgold`, applies MultiMon's changes to it
+and adds the PC port.
+
+### 4. Build the DS version once
+
+```bash
+cd ~/pokeheartgold && make
+```
+
+The first run downloads the libraries the build uses and takes a while. It ends with
+`build/pokeheartgold.us.nds`. The PC build reuses the compile settings this step creates; you don't
+need that file for anything else.
+
+### 5. Build the PC version
+
+Linux version (`build/pc/hg_pc` and the server `build/pc/hg_server`):
+
+```bash
+python3 pc/tools/pc_build.py
+```
+
+Windows version (`build/pc-win/hg_pc.exe`, `SDL3.dll` and the server `hg_server.exe`):
+
+```bash
+python3 pc/tools/pc_build.py --win
+```
+
+For Windows, copy the three files from `build/pc-win/` to a folder on the Windows side. The helper
+scripts from `dist/windows/` can go in the same folder.
+
+### 6. Play
+
+You need a US HeartGold ROM that you dumped from your own cartridge.
+- **Linux:** run `./build/pc/hg_pc /path/to/heartgold.nds`.
+- **Windows:** run `hg_pc.exe`, or `play.bat` to keep a log. It asks for the ROM the first time and
+  remembers it.
+
+Esc opens the options menu (volume, speed, keys, multiplayer).
 
 ## Playing together
 
