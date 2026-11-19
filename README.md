@@ -38,20 +38,21 @@ the port itself is described in [docs/PORT_PLAN.md](docs/PORT_PLAN.md) and
 
 ## Building
 
-Both the Linux and the Windows versions are built on Linux: Ubuntu 25.04 or newer, which has the SDL3
-packages. On Windows, use Ubuntu in WSL2. Do these steps in order.
+Both the Linux and the Windows versions are built on Linux. You need Ubuntu 25.04 or newer, or Debian 13
+(trixie) or newer: older releases don't have the SDL3 packages. On Windows, use either of them in WSL2.
+Do these steps in order.
 
-### 1. Windows only: install Ubuntu in WSL2
+### 1. Windows only: install Linux in WSL2
 
 1. Open PowerShell as administrator (right-click it in the Start menu, then **Run as administrator**).
-2. Install Ubuntu, then restart Windows if it asks you to:
+2. Install Ubuntu, or Debian by using `-d Debian` instead. Restart Windows if it asks you to:
 
    ```powershell
    wsl --install -d Ubuntu
    ```
 
-3. Open **Ubuntu** from the Start menu. The first time, it asks for a new user name and password. The
-   password doesn't show while you type it.
+3. Open **Ubuntu** (or **Debian**) from the Start menu. The first time, it asks for a new user name and
+   password. The password doesn't show while you type it.
 4. Work in the Linux home folder, not under `/mnt/c`, which is much slower:
 
    ```bash
@@ -60,20 +61,29 @@ packages. On Windows, use Ubuntu in WSL2. Do these steps in order.
 
 ### 2. Install the build tools
 
-Allow 32-bit packages:
+Ubuntu and Debian use the same packages and commands.
 
-```bash
-sudo dpkg --add-architecture i386 && sudo apt update
-```
+1. Debian only: if `sudo` isn't set up (a Debian installed with a root password), become root first
+   with `su -`, and leave out `sudo` in the next two commands.
+2. Allow 32-bit packages:
 
-Install the tools:
+   ```bash
+   sudo dpkg --add-architecture i386 && sudo apt update
+   ```
 
-```bash
-sudo apt install bison flex g++ gcc-arm-none-eabi git make ninja-build pkg-config wget python3 xz-utils nasm libc6:i386 libpng-dev gcc-multilib libsdl3-dev:i386 gcc-mingw-w64-i686
-```
+3. Install the tools:
 
-The DS build needs the first group of these. `gcc-multilib` and `libsdl3-dev:i386` are for the Linux
-version, and `gcc-mingw-w64-i686` is for the Windows version.
+   ```bash
+   sudo apt install bison flex g++ gcc-arm-none-eabi git make ninja-build pkg-config wget python3 xz-utils nasm libc6:i386 libpng-dev gcc-multilib libsdl3-dev:i386 gcc-mingw-w64-i686
+   ```
+
+   The DS build needs the first group of these. `gcc-multilib` and `libsdl3-dev:i386` are for the
+   Linux version, and `gcc-mingw-w64-i686` is for the Windows version.
+
+   On Debian 12 (bookworm) and older, `libsdl3-dev:i386` doesn't exist. Leave it out and you can still
+   build the Windows version, and the server for both, but the Linux version then runs without a
+   window or sound.
+4. If you did step 1 as root, go back to your own user with `exit`.
 
 For the Windows version, also get SDL3 for mingw:
 
